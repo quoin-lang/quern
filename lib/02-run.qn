@@ -15,16 +15,19 @@ Error <- [Quern]StepError <- {}
 
 "* What a task body sees as `self`: its name, its output channel (prefixed,
 "* or captured when quiet), and the step runners.
-[Quern]Ctx <- { |@taskName @color @quiet @captured @template|
-    "* Internal: built by the run, one per task execution. Styled values don't
-    "* concatenate — they SPLICE (`%`), which also keeps the spliced line's
-    "* brackets literal — so the prefix is a styled template built once.
+[Quern]Ctx <- { |@taskName @color @quiet @captured @prefix|
+    "* Internal: built by the run, one per task execution. The prefix is
+    "* PRE-RENDERED once (Term.render:, gated on Term.color?) to a plain
+    "* String carrying only its own escape codes — so a line is one ordinary
+    "* concatenation, only the [task] tag is tinted, and a child's own color
+    "* output passes through untouched.
     init: -> { |taskName:String color:String quiet:Boolean|
         @taskName = taskName
         @color = color
         @quiet = quiet
         @captured = #()
-        @template = ('[' + taskName + '] %').styled:color
+        var label = '[' + taskName + '] '
+        @prefix = Term.color?.if:{ Term.render:(label.styled:color) } else:{ label }
     }
 
     "* The running task's name.
@@ -34,7 +37,7 @@ Error <- [Quern]StepError <- {}
     "* quiet). Answers self.
     log: -> { |line|
         @quiet.if:{ @captured.add:line }
-        else:{ [IO]Stdout.writeln:(@template % line) }
+        else:{ [IO]Stdout.writeln:(@prefix + line) }
         ^self
     }
 
@@ -48,8 +51,11 @@ Error <- [Quern]StepError <- {}
 
     "* `run:` with the child's working directory.
     run:dir: -> { |argv dir|
-        var p = dir.defined?.if:{ [OS]Process.start:argv dir:dir }
-            else:{ [OS]Process.start:argv }
+        "* A child sees a pipe and turns its own colors off; when OUR output is
+        "* colored, pass the standard force flag through — child escapes flow
+        "* through the prefixing untouched, so they simply survive.
+        var env = Term.color?.if:{ #{ 'CLICOLOR_FORCE': '1' } } else:{ nil }
+        var p = [OS]Process.start:argv env:env dir:dir
         var out = p.stdoutText
         var err = p.stderrText
         var me = self
@@ -68,8 +74,8 @@ Error <- [Quern]StepError <- {}
         (code == 0).else:{
             "* A quiet task's output only matters now — replay it.
             @quiet.if:{
-                var tpl = @template
-                @captured.each:{ |l| [IO]Stdout.writeln:(tpl % l) }
+                var pfx = @prefix
+                @captured.each:{ |l| [IO]Stdout.writeln:(pfx + l) }
             }
             var how = code.defined?.if:{ 'exited %' % code } else:{ 'died on a signal' }
             [Quern]StepError.throw:('%1: `%2` %3' % #( @taskName (argv.join:' ') how ))
