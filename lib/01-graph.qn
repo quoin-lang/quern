@@ -1,0 +1,135 @@
+"* The task graph a Quernfile declares, and the `Quern` facade its DSL goes
+"* through. A Quernfile is ordinary Quoin:
+"*
+"*   Quern.tasks:{
+"*       .task:'build' does:{ .sh:'cargo build' };
+"*       .task:'test' needs:'build' does:{ .sh:'cargo nt' };
+"*       .task:'ci' needs:#( 'test' 'lint' );
+"*       .default:'ci'
+"*   }
+"*
+"* The graph mixes Iterate over its tasks (declaration order), so `--list`
+"* and lint-your-Quernfile one-liners get the whole collection vocabulary.
+
+"* Quern's module state: the current graph the Quernfile DSL registers into.
+[Quern]State <- #{}
+
+[Quern]Graph <- { |@tasks @byName @defaultName|
+    .mix:Iterate
+
+    "* Internal.
+    init -> {
+        @tasks = #()
+        @byName = #{}
+    }
+
+    "* Declare a task with a body; the block runs with a [Quern]Ctx as self
+    "* (`.sh:`/`.run:`/`.log:`). Answers the TASK, so extras chain
+    "* (`info:`, `sources:`, `produces:`, `timeout:`, `quiet!`).
+    task:does: -> { |name b| ^.register:name needs:#() block:b }
+
+    "* Declare a task with dependencies (a name or a List of names) and a
+    "* body. Answers the task.
+    task:needs:does: -> { |name deps b| ^.register:name needs:deps block:b }
+
+    "* Declare an aggregate: a named group of dependencies, no body of its
+    "* own. Answers the task.
+    task:needs: -> { |name deps| ^.register:name needs:deps block:nil }
+
+    "* Internal: the one task constructor — checks the name is new, then
+    "* records the task in both indexes.
+    register:needs:block: -> { |taskName deps b|
+        (@byName.at:taskName).defined?.if:{
+            ValueError.throw:('quern: task \'%\' is already defined' % taskName)
+        }
+        var t = [Quern]Task.new:{ var name = taskName }
+        t.setNeeds:deps
+        b.defined?.if:{ t.setBlock:b }
+        @tasks.add:t
+        @byName.at:taskName put:t
+        ^t
+    }
+
+    "* Name the task `quern` runs when invoked bare.
+    default: -> { |name:String| @defaultName = name }
+
+    "* The default task's name, or nil.
+    defaultName -> { @defaultName }
+
+    "* The task named `name`, or nil.
+    at: -> { |name| ^@byName.at:name }
+
+    "* Every task, in declaration order.
+    tasks -> { @tasks }
+
+    "* How many tasks are declared.
+    count -> { @tasks.count }
+
+    "* Yield each task in declaration order; answers self. Iterate rides on
+    "* this.
+    each: -> { |block|
+        @tasks.each:block
+        ^self
+    }
+
+    "* Every task `names` transitively need, deps before dependents — the
+    "* execution plan. An unknown name or a dependency cycle throws a
+    "* ValueError naming it.
+    planFor: -> { |names|
+        var order = #()
+        var state = #{}
+        var me = self
+        var visit = nil
+        visit = { |taskName trail|
+            var st = state.at:taskName
+            ((st == 'done')).else:{
+                (st == 'visiting').if:{
+                    var cycle = (trail.collect:{ |x| x })
+                    cycle.add:taskName
+                    ValueError.throw:('quern: dependency cycle: ' + (cycle.join:' -> '))
+                }
+                var t = me.at:taskName
+                t.defined?.else:{ ValueError.throw:('quern: unknown task \'%\'' % taskName) }
+                state.at:taskName put:'visiting'
+                var deeper = (trail.collect:{ |x| x })
+                deeper.add:taskName
+                t.needs.each:{ |d| visit.valueWithArgs:#( d deeper ) }
+                state.at:taskName put:'done'
+                order.add:t
+            }
+        }
+        names.each:{ |n| visit.valueWithArgs:#( n #() ) }
+        ^order
+    }
+
+    s -> { ^'[Quern]Graph(% tasks)' % @tasks.count }
+}
+
+"* The Quernfile's entry point: `Quern.tasks:{ … }` runs the block with the
+"* CURRENT graph as self (created on first use, shared across calls, so a
+"* Quernfile may declare in several passes). `Quern.graph` reads it; `reset`
+"* forgets it (tests, or reloading a different Quernfile).
+Quern <- {
+    .meta <-- {
+        "* Declare tasks: the block's bare `.task:…` / `.default:` sends land
+        "* on the current graph. Answers the graph.
+        tasks: -> { |b|
+            var g = .graph
+            b.valueWithSelf:g
+            ^g
+        }
+
+        "* The current graph, created on first use.
+        graph -> {
+            var g = [Quern]State.at:'graph'
+            g.defined?.else:{
+                g = [Quern]Graph.new
+                [Quern]State.at:'graph' put:g
+            }
+            ^g
+        }
+
+        "* Forget the current graph — the next `tasks:`/`graph` starts fresh.
+        reset -> { [Quern]State.at:'graph' put:nil }
+    }
+}

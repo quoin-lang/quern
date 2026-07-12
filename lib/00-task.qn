@@ -1,0 +1,105 @@
+"* One task: a name, its dependencies, an optional body block, and the
+"* declarative extras — freshness inputs/outputs, a timeout, a description.
+"* Built through [Quern]Graph's `task:…` declarations, which answer the task
+"* so the extras chain:
+"*
+"*   (.task:'dist' needs:'test' does:{ .sh:'make tarball' })
+"*       .info:'build the release tarball'
+"*       .sources:#( 'target/release/qn' )
+"*       .produces:#( 'dist/qn.tar.gz' )
+[Quern]Task <- { |@name @info @needs @block @sources @produces @timeoutMs @quiet|
+    "* Internal: constructed by the graph; the setters below refine.
+    init: -> { |name:String|
+        @name = name
+        @needs = #()
+        @sources = #()
+        @produces = #()
+        @quiet = false
+    }
+
+    "* The task's name — what `quern NAME` and `needs:` refer to.
+    name -> { @name }
+
+    "* The one-line description `quern --list` shows, or nil.
+    info -> { @info }
+
+    "* The names this task depends on (always a List).
+    needs -> { @needs }
+
+    "* The body block, or nil for an aggregate (a named group of needs).
+    block -> { @block }
+
+    "* Input paths for the freshness check (see `fresh?`).
+    sources -> { @sources }
+
+    "* Output paths for the freshness check (see `fresh?`).
+    produces -> { @produces }
+
+    "* The time budget in milliseconds (a timeout fails the task), or nil.
+    timeoutMs -> { @timeoutMs }
+
+    "* Whether output is captured instead of streamed (replayed on failure).
+    quiet? -> { @quiet }
+
+    "* Whether this task has no body of its own.
+    aggregate? -> { @block.defined? == false }
+
+    "* Set the `--list` description. Answers self.
+    info: -> { |text:String|
+        @info = text
+        ^self
+    }
+
+    "* Set the freshness inputs. Answers self.
+    sources: -> { |paths|
+        @sources = paths
+        ^self
+    }
+
+    "* Set the freshness outputs. Answers self.
+    produces: -> { |paths|
+        @produces = paths
+        ^self
+    }
+
+    "* Set the time budget, in milliseconds. Answers self.
+    timeout: -> { |ms:Integer|
+        @timeoutMs = ms
+        ^self
+    }
+
+    "* Capture this task's output instead of streaming it; the run replays it
+    "* if the task fails. Answers self.
+    quiet! -> {
+        @quiet = true
+        ^self
+    }
+
+    "* Internal: the graph normalizes needs — a String means one dependency.
+    setNeeds: -> { |deps| @needs = (String ~ deps).if:{ #( deps ) } else:{ deps } }
+
+    "* Internal.
+    setBlock: -> { |b| @block = b }
+
+    "* Fresh means skippable: every produce exists, and none is older than any
+    "* source (mtimes from the [IO]File metadata snapshot). No produces — a
+    "* plain action task — is never fresh; a missing source runs the task and
+    "* lets the body fail honestly.
+    fresh? -> {
+        (@produces.any?).else:{ ^^false }
+        var newestSource = nil
+        @sources.each:{ |p|
+            ([IO]File.exists?:p).else:{ ^^false }
+            var m = ([IO]File.open:p).modified
+            ((newestSource == nil) || (newestSource < m)).if:{ newestSource = m }
+        }
+        @produces.each:{ |p|
+            ([IO]File.exists?:p).else:{ ^^false }
+            var m = ([IO]File.open:p).modified
+            ((newestSource.defined?) && (m < newestSource)).if:{ ^^false }
+        }
+        ^true
+    }
+
+    s -> { ^'[Quern]Task(%)' % @name }
+}

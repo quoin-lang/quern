@@ -1,0 +1,19 @@
+"* Quern's one platform extension: a one-shot SHELL run belongs on
+"* [OS]Process, right next to `run:` — it is not a task-runner concept, tasks
+"* just happen to want it (`[Quern]Ctx#sh:` is the streaming twin). Explicit
+"* shell semantics: `sh -c`, so pipes, globs, and $VARs work and shell
+"* quoting rules apply. Prefer `run:` for anything built from data.
+[OS]Process <-- {
+    .meta <-- {
+        "* Run a shell command line to completion and answer the
+        "* [OS]ProcessResult, exactly as `run:` would.
+        "*
+        "* ```
+        "* ([OS]Process.shell:'echo one | tr a-z A-Z').stdout    "* -> ONE
+        "* ```
+        shell: -> { |cmd:String| ^.run:#( 'sh' '-c' cmd ) }
+
+        "* `shell:` with the child's working directory.
+        shell:dir: -> { |cmd dir| ^.run:#( 'sh' '-c' cmd ) dir:dir }
+    }
+}

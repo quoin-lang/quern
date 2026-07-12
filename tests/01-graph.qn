@@ -1,0 +1,75 @@
+"* [Quern]Graph + the Quern DSL: declaration, chaining, the plan (order,
+"* dedup, cycles, unknowns). Pure — nothing here runs a task.
+use self:lib/*
+
+(TestSuite.new:{ var name = 'QuernGraph' }).add:{
+    .teardownAll:{ Quern.reset };
+
+    .test:
+    declarationAndChaining -> {
+        var g = [Quern]Graph.new;
+        var t = g.task:'dist' needs:'test' does:{ 1 };
+        t.info:'ship it';
+        t.sources:#( 'a' );
+        t.produces:#( 'b' );
+        t.timeout:5000;
+        .is:{ t.name } equalTo:'dist';
+        "* a String needs normalizes to a one-element List
+        .is:{ t.needs } equalTo:#( 'test' );
+        .is:{ t.info } equalTo:'ship it';
+        .is:{ t.timeoutMs } equalTo:5000;
+        .isFalse:{ t.quiet? };
+        .isTrue:{ t.quiet!.quiet? };
+        .isFalse:{ t.aggregate? };
+        .is:{ (g.at:'dist').name } equalTo:'dist';
+        .is:{ g.at:'nope' } equalTo:nil;
+        "* redefining a name is an error, not a silent replacement
+        .does:{ g.task:'dist' does:{ 2 } } throw:ValueError;
+        .isTrue:{ (g.task:'agg' needs:#( 'dist' )).aggregate? };
+    };
+
+    .test:
+    dslRegistersIntoTheCurrentGraph -> {
+        Quern.reset;
+        var g = Quern.tasks:{
+            .task:'a' does:{ 1 };
+            .task:'b' needs:'a' does:{ 2 };
+            .default:'b'
+        };
+        .is:{ g.count } equalTo:2;
+        .is:{ g.defaultName } equalTo:'b';
+        "* a second tasks: block extends the same graph...
+        Quern.tasks:{ .task:'c' does:{ 3 } };
+        .is:{ Quern.graph.count } equalTo:3;
+        "* ...and Iterate rides on each: — the graph is a collection.
+        .is:{ (g.select:{ |t| t.needs.any? }).count } equalTo:1;
+        .isTrue:{ g.any?:{ |t| t.name == 'c' } };
+        "* reset forgets it
+        Quern.reset;
+        .is:{ Quern.graph.count } equalTo:0;
+    };
+
+    .test:
+    planOrderCyclesAndUnknowns -> {
+        var g = [Quern]Graph.new;
+        g.task:'d' needs:#( 'b' 'c' ) does:{ 1 };
+        g.task:'b' needs:'a' does:{ 1 };
+        g.task:'c' needs:'a' does:{ 1 };
+        g.task:'a' does:{ 1 };
+        var plan = g.planFor:#( 'd' );
+        "* the diamond: every dep once, deps before dependents
+        .is:{ plan.count } equalTo:4;
+        .is:{ (plan.at:0).name } equalTo:'a';
+        .is:{ (plan.at:3).name } equalTo:'d';
+        "* two roots share their closure
+        .is:{ (g.planFor:#( 'b' 'c' )).count } equalTo:3;
+        .does:{ g.planFor:#( 'nope' ) } throw:ValueError;
+        var gc = [Quern]Graph.new;
+        gc.task:'x' needs:'y' does:{ 1 };
+        gc.task:'y' needs:'x' does:{ 1 };
+        {
+            gc.planFor:#( 'x' )
+            !!!
+        }.catch:{ |e:ValueError| .isTrue:{ e.message.contains?:'cycle' } };
+    };
+}

@@ -1,0 +1,347 @@
+"* Execution. [Quern]Run drives a plan DEPENDENCY-DRIVEN: every task starts
+"* the moment its last dependency finishes (not in rigid topo layers), bounded
+"* by `jobs`. Each running task is a scheduler Task; completions fan in over
+"* one Channel; a failure skips its dependents (and with failFast cancels
+"* everything else in flight — cancelled subprocesses die with their task,
+"* the [OS]Process kill-on-collection contract). Task bodies run with a
+"* [Quern]Ctx as self: `.run:`/`.sh:` stream the subprocess's output live
+"* under a colored [task] prefix, line by line, via reader fibers.
+
+"* A step (`run:`/`sh:`) exited nonzero; the run marks its task failed.
+Error <- [Quern]StepError <- {}
+
+"* Prefix colors, cycled per launched task.
+[Quern]Palette <- #( '#5fd7af' '#ab82ff' '#00bfff' '#ffd75f' '#ff9e64' '#69ff61' )
+
+"* What a task body sees as `self`: its name, its output channel (prefixed,
+"* or captured when quiet), and the step runners.
+[Quern]Ctx <- { |@taskName @color @quiet @captured @template|
+    "* Internal: built by the run, one per task execution. Styled values don't
+    "* concatenate — they SPLICE (`%`), which also keeps the spliced line's
+    "* brackets literal — so the prefix is a styled template built once.
+    init: -> { |taskName:String color:String quiet:Boolean|
+        @taskName = taskName
+        @color = color
+        @quiet = quiet
+        @captured = #()
+        @template = ('[' + taskName + '] %').styled:color
+    }
+
+    "* The running task's name.
+    name -> { @taskName }
+
+    "* Print `line` under this task's colored prefix (or capture it, when
+    "* quiet). Answers self.
+    log: -> { |line|
+        @quiet.if:{ @captured.add:line }
+        else:{ [IO]Stdout.writeln:(@template % line) }
+        ^self
+    }
+
+    "* The captured lines (quiet mode) — replayed when a step fails.
+    captured -> { @captured }
+
+    "* Run a command — an argv List, NO shell: nothing splits, nothing
+    "* expands. Both pipes stream line by line under the task's prefix (a
+    "* reader fiber each); nonzero exit throws a [Quern]StepError. Answers nil.
+    run: -> { |argv| ^.run:argv dir:nil }
+
+    "* `run:` with the child's working directory.
+    run:dir: -> { |argv dir|
+        var p = dir.defined?.if:{ [OS]Process.start:argv dir:dir }
+            else:{ [OS]Process.start:argv }
+        var out = p.stdoutText
+        var err = p.stderrText
+        var me = self
+        var ended = Async.gather:#(
+            {
+                out.eachLine:{ |l| me.log:l }
+                nil
+            }
+            {
+                err.eachLine:{ |l| me.log:l }
+                nil
+            }
+            { p.wait }
+        )
+        var code = ended.at:2
+        (code == 0).else:{
+            "* A quiet task's output only matters now — replay it.
+            @quiet.if:{
+                var tpl = @template
+                @captured.each:{ |l| [IO]Stdout.writeln:(tpl % l) }
+            }
+            var how = code.defined?.if:{ 'exited %' % code } else:{ 'died on a signal' }
+            [Quern]StepError.throw:('%1: `%2` %3' % #( @taskName (argv.join:' ') how ))
+        }
+        nil
+    }
+
+    "* Run a SHELL command line (`sh -c` — pipes, globs, $VARs, with shell
+    "* quoting rules). Prefer `run:` for anything built from data.
+    sh: -> { |cmd:String| ^.run:#( 'sh' '-c' cmd ) }
+
+    "* `sh:` with the child's working directory.
+    sh:dir: -> { |cmd dir| ^.run:#( 'sh' '-c' cmd ) dir:dir }
+
+    s -> { ^'[Quern]Ctx(%)' % @taskName }
+}
+
+"* One task's outcome: #ok, #fresh (skipped up to date), #failed, #skipped
+"* (a dependency failed), or #cancelled (fail-fast).
+[Quern]TaskResult <- { |@name @outcome @elapsedUs @error|
+    "* Internal: recorded by the run.
+    init: -> { |name outcome elapsedUs error|
+        @name = name
+        @outcome = outcome
+        @elapsedUs = elapsedUs
+        @error = error
+    }
+
+    "* The task's name.
+    name -> { @name }
+    "* #ok / #fresh / #failed / #skipped / #cancelled.
+    outcome -> { @outcome }
+    "* The body's wall time in microseconds (0 when it never ran).
+    elapsedUs -> { @elapsedUs }
+    "* What a failed body threw, or nil.
+    error -> { @error }
+    "* Whether this task counts as satisfied (#ok or #fresh).
+    ok? -> { (@outcome == #ok) || (@outcome == #fresh) }
+
+    s -> { ^'[Quern]TaskResult(%1 %2)' % #( @name @outcome ) }
+}
+
+"* A whole run's outcome: per-task results in completion order, wall time,
+"* and the verdict `quern`'s exit code reports.
+[Quern]Summary <- { |@results @elapsedUs|
+    "* Internal: built by the run.
+    init: -> { |results elapsedUs|
+        @results = results
+        @elapsedUs = elapsedUs
+    }
+
+    "* Every [Quern]TaskResult, in completion order.
+    results -> { @results }
+    "* The run's wall time in microseconds.
+    elapsedUs -> { @elapsedUs }
+    "* The result for `name`, or nil.
+    at: -> { |name| ^@results.detect:{ |r| r.name == name } }
+    "* How many results ended `outcome`.
+    count: -> { |outcome| ^(@results.select:{ |r| r.outcome == outcome }).count }
+    "* True when nothing failed, was cancelled, or was skipped.
+    ok? -> { ^@results.all?:{ |r| r.ok? } }
+
+    s -> {
+        ^'quern: %1 ok, %2 fresh, %3 failed, %4 skipped, %5 cancelled' % #(
+            (.count:#ok)
+            (.count:#fresh)
+            (.count:#failed)
+            (.count:#skipped)
+            (.count:#cancelled)
+        )
+    }
+}
+
+"* The executor. Construct over a graph (jobs/failFast/quiet/dryRun optional),
+"* then `run:` a List of task names; answers a [Quern]Summary — failures land
+"* in the summary, they don't throw.
+"*
+"*   var summary = ([Quern]Run.new:{ var graph = g; var jobs = 8 }).run:#( 'ci' )
+"*   summary.ok?
+[Quern]Run <- { |@graph @jobs @failFast @quiet @dryRun @silent|
+    .meta <-- {
+        "* Microseconds, humanized: '87ms' below a second, '2.3s' above.
+        human: -> { |us ^String|
+            (us < 1000000).if:{ ^^((us / 1000).s + 'ms') }
+            ^((us / 1000000).s + '.' + ((us / 100000) % 10).s + 's')
+        }
+    }
+
+    "* Internal: defaults — jobs 4, everything else off. `silent` mutes the
+    "* per-task report lines (tests; callers reading only the Summary).
+    init: -> { |graph jobs failFast quiet dryRun silent|
+        @graph = graph
+        @jobs = jobs.defined?.if:{ jobs } else:{ 4 }
+        @failFast = failFast == true
+        @quiet = quiet == true
+        @dryRun = dryRun == true
+        @silent = silent == true
+    }
+
+    "* Execute `names` and everything they need. Answers the [Quern]Summary.
+    run: -> { |names|
+        var plan = @graph.planFor:names
+        @dryRun.if:{ ^^.printPlan:plan }
+        var state = #{}
+        var waiting = #{}
+        var dependents = #{}
+        plan.each:{ |t|
+            state.at:(t.name) put:#pending
+            waiting.at:(t.name) put:(t.needs.count)
+            t.needs.each:{ |d|
+                var ds = dependents.at:d
+                ds.defined?.else:{
+                    ds = #()
+                    dependents.at:d put:ds
+                }
+                ds.add:(t.name)
+            }
+        }
+        var chan = Channel.buffered:(plan.count)
+        var running = #{}
+        var results = #()
+        var pending = plan.count
+        var runningCount = 0
+        var colorIdx = 0
+        var me = self
+
+        "* Record a terminal outcome; unlock or condemn the dependents.
+        var skipDeps = nil
+        var complete = nil
+        complete = { |cname coutcome cerr cus|
+            state.at:cname put:coutcome
+            pending = pending - 1
+            results.add:([Quern]TaskResult.new:{
+                var name = cname
+                var outcome = coutcome
+                var elapsedUs = cus
+                var error = cerr
+            })
+            me.report:cname outcome:coutcome elapsedUs:cus error:cerr
+            ((coutcome == #ok) || (coutcome == #fresh)).if:{
+                var ds = dependents.at:cname
+                ds.defined?.if:{
+                    ds.each:{ |d| waiting.at:d put:((waiting.at:d) - 1) }
+                }
+            }
+            else:{ skipDeps.value:cname }
+        }
+        skipDeps = { |sname|
+            var ds = dependents.at:sname
+            ds.defined?.if:{
+                ds.each:{ |d|
+                    ((state.at:d) == #pending).if:{
+                        complete.valueWithArgs:#( d #skipped nil 0 )
+                    }
+                }
+            }
+        }
+
+        var elapsed = Timer.time:{
+            { pending > 0 }.whileDo:{
+                "* Launch everything launchable; fresh tasks and bodiless
+                "* aggregates complete on the spot.
+                plan.each:{ |t|
+                    var n = t.name
+                    (((state.at:n) == #pending) && ((waiting.at:n) == 0)
+                        && (runningCount < @jobs)).if:{
+                        (t.fresh?).if:{ complete.valueWithArgs:#( n #fresh nil 0 ) }
+                        else:{
+                            (t.aggregate?).if:{ complete.valueWithArgs:#( n #ok nil 0 ) }
+                            else:{
+                                state.at:n put:#running
+                                runningCount = runningCount + 1
+                                var color = [Quern]Palette.at:(colorIdx % [Quern]Palette.count)
+                                colorIdx = colorIdx + 1
+                                var handle = Task.spawn:{
+                                    var outcome = #ok
+                                    var err = nil
+                                    var us = Timer.time:{
+                                        { me.invoke:t color:color }.catch:{ |e|
+                                            outcome = #failed
+                                            err = e
+                                        }
+                                    }
+                                    chan.send:#( n outcome err us )
+                                }
+                                running.at:n put:handle
+                            }
+                        }
+                    }
+                }
+                (runningCount > 0).if:{
+                    var msg = chan.receive
+                    runningCount = runningCount - 1
+                    complete.valueWithArgs:msg
+                    (((msg.at:1) == #failed) && @failFast).if:{
+                        "* Cancel the in-flight rest; condemn everything not
+                        "* yet terminal. Cancelled subprocesses die with their
+                        "* tasks (kill-on-collection).
+                        running.each:{ |kv|
+                            ((state.at:(kv.key)) == #running).if:{
+                                kv.value.cancel
+                                runningCount = runningCount - 1
+                                complete.valueWithArgs:#( (kv.key) #cancelled nil 0 )
+                            }
+                        }
+                        plan.each:{ |t|
+                            ((state.at:(t.name)) == #pending).if:{
+                                complete.valueWithArgs:#( (t.name) #cancelled nil 0 )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ^[Quern]Summary.new:{
+            var results = results
+            var elapsedUs = elapsed
+        }
+    }
+
+    "* Internal: run one body with its ctx, under the task's timeout when set.
+    invoke:color: -> { |t taskColor|
+        var body = t.block
+        var tn = t.name
+        var q = (@quiet) || (t.quiet?)
+        var ctx = [Quern]Ctx.new:{
+            var taskName = tn
+            var color = taskColor
+            var quiet = q
+        }
+        (t.timeoutMs.defined?).if:{
+            ^^Async.timeout:(t.timeoutMs) do:{ body.valueWithSelfOrArg:ctx }
+        }
+        ^body.valueWithSelfOrArg:ctx
+    }
+
+    "* Internal: one completion line.
+    report:outcome:elapsedUs:error: -> { |name outcome elapsedUs error|
+        @silent.if:{ ^^nil }
+        (outcome == #ok).if:{
+            [IO]Stdout.writeln:(('✓ ' + name + '  ' + ([Quern]Run.human:elapsedUs)).styled:'#69ff61')
+        }
+        else:{
+            (outcome == #fresh).if:{
+                [IO]Stdout.writeln:(('~ ' + name + '  (fresh)').styled:'#00bfff')
+            }
+            else:{
+                (outcome == #failed).if:{
+                    [IO]Stdout.writeln:(('✗ ' + name + '  ' + error.s).styled:'#ff6961')
+                }
+                else:{
+                    (outcome == #skipped).if:{
+                        [IO]Stdout.writeln:(('- ' + name + '  (a dependency failed)').styled:'#ffd75f')
+                    }
+                    else:{ [IO]Stdout.writeln:(('! ' + name + '  (cancelled)').styled:'#ffd75f') }
+                }
+            }
+        }
+    }
+
+    "* Internal: --dry-run — the plan, nothing executed.
+    printPlan: -> { |plan|
+        @silent.else:{
+            plan.each:{ |t|
+                var deps = t.needs.any?.if:{ '  <- ' + (t.needs.join:' ') } else:{ '' }
+                (t.name + deps).print
+            }
+        }
+        ^[Quern]Summary.new:{
+            var results = #()
+            var elapsedUs = 0
+        }
+    }
+
+}

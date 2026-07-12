@@ -1,0 +1,70 @@
+#!/usr/bin/env qn
+"* quern — a parallel task runner for Quoin projects. Loads the Quernfile.qn
+"* in the current directory (or --file), then runs the named tasks (or the
+"* Quernfile's default) dependency-driven in parallel.
+use self:lib/*
+
+var cli = [CLI]Spec.new:'quern' about:'A parallel task runner for Quoin projects.'
+cli.option:'file' short:'f' default:'Quernfile.qn' help:'the Quernfile to load'
+cli.option:'jobs' short:'j' default:'4' help:'how many tasks may run at once'
+cli.flag:'list' short:'l' help:'list the tasks and exit'
+cli.flag:'dry-run' help:'print the execution plan without running it'
+cli.flag:'fail-fast' help:'cancel everything in flight on the first failure'
+cli.flag:'quiet' short:'q' help:'capture task output; replay it only on failure'
+cli.flag:'verbose' short:'v' help:'debug logging'
+cli.rest:'tasks'
+var args = cli.parse
+
+(args.flag?:'verbose').if:{ Log.level:#debug }
+
+var quernfile = args.at:'file'
+([IO]File.exists?:quernfile).else:{
+    [IO]Stderr.writeln:('quern: no ' + quernfile + ' in this directory (see --file)')
+    Runtime.exit:2
+}
+Runtime.eval:([IO]File.read:quernfile)
+var g = Quern.graph
+(g.count == 0).if:{
+    [IO]Stderr.writeln:('quern: ' + quernfile + ' declares no tasks')
+    Runtime.exit:2
+}
+
+(args.flag?:'list').if:{
+    var width = (g.tasks.collect:{ |t| t.name.length }).max
+    g.each:{ |t|
+        [IO]Stdout.write:((t.name.padRight:width).styled:'#5fd7af bold')
+        (t.info.defined?).if:{ [IO]Stdout.write:('  ' + t.info) }
+        (t.needs.any?).if:{ [IO]Stdout.write:(('  <- ' + (t.needs.join:' ')).styled:'#8a8a8a') }
+        (t.name == g.defaultName).if:{ [IO]Stdout.write:('  (default)'.styled:'#ffd75f') }
+        [IO]Stdout.writeln:''
+    }
+    Runtime.exit:0
+}
+
+var targets = args.at:'tasks'
+(targets.any?).else:{
+    (g.defaultName.defined?).if:{ targets = #( g.defaultName ) }
+    else:{
+        [IO]Stderr.writeln:'quern: no task named and the Quernfile sets no default'
+        Runtime.exit:2
+    }
+}
+
+var jobsArg = (args.at:'jobs').to_integer
+var summary = nil
+{
+    var run = [Quern]Run.new:{
+        var graph = g
+        var jobs = jobsArg
+        var failFast = args.flag?:'fail-fast'
+        var quiet = args.flag?:'quiet'
+        var dryRun = args.flag?:'dry-run'
+    }
+    summary = run.run:targets
+}.catch:{ |e:ValueError|
+    "* An unknown task or a dependency cycle — a usage problem, not a crash.
+    [IO]Stderr.writeln:('quern: ' + e.message)
+    Runtime.exit:2
+}
+(summary.s + '  in ' + ([Quern]Run.human:summary.elapsedUs)).print
+Runtime.exit:(summary.ok?.if:{ 0 } else:{ 1 })

@@ -1,0 +1,177 @@
+"* [Quern]Run: the dependency-driven executor. Concurrency is proven with a
+"* RENDEZVOUS, not timing — two independent tasks that hand a value across an
+"* unbuffered Channel can only both finish if they really run at once.
+use self:lib/*
+
+(TestSuite.new:{ var name = 'QuernRun' }).add:{
+    .teardownAll:{
+        ([OS]Process.run:#( 'rm' '-f' '/tmp/qn_quern_src.txt' '/tmp/qn_quern_out.txt' )).check;
+    };
+
+    .test:
+    runsInDependencyOrder -> {
+        var g = [Quern]Graph.new;
+        var log = #();
+        g.task:'a' does:{ log.add:'a' };
+        g.task:'b' needs:'a' does:{ log.add:'b' };
+        g.task:'c' needs:'b' does:{ log.add:'c' };
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'c' );
+        .isTrue:{ s.ok? };
+        .is:{ log } equalTo:#( 'a' 'b' 'c' );
+        .is:{ (s.at:'a').outcome } equalTo:#ok;
+        .is:{ s.count:#ok } equalTo:3;
+        .isTrue:{ (s.at:'c').elapsedUs >= 0 };
+    };
+
+    .test:
+    independentTasksRunConcurrently -> {
+        var g = [Quern]Graph.new;
+        var ch = Channel.new;
+        g.task:'ping' does:{ ch.send:'x' };
+        g.task:'pong' does:{ ch.receive };
+        var s = Async.timeout:5000 do:{
+            ([Quern]Run.new:{
+                var graph = g
+                var jobs = 2
+                var silent = true
+            }).run:#( 'ping' 'pong' )
+        };
+        .isTrue:{ s.ok? };
+    };
+
+    .test:
+    jobsOneIsStrictlySerial -> {
+        var g = [Quern]Graph.new;
+        var log = #();
+        g.task:'one' does:{
+            log.add:'one-start'
+            Async.sleep:20
+            log.add:'one-end'
+        };
+        g.task:'two' does:{
+            log.add:'two-start'
+            log.add:'two-end'
+        };
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var jobs = 1
+            var silent = true
+        }).run:#( 'one' 'two' );
+        .isTrue:{ s.ok? };
+        "* with one slot, the second task cannot start inside the first
+        .is:{ log } equalTo:#( 'one-start' 'one-end' 'two-start' 'two-end' );
+    };
+
+    .test:
+    failureSkipsDependentsButSiblingsFinish -> {
+        var g = [Quern]Graph.new;
+        var log = #();
+        g.task:'bad' does:{ ValueError.throw:'boom' };
+        g.task:'child' needs:'bad' does:{ log.add:'child' };
+        g.task:'grandchild' needs:'child' does:{ log.add:'gc' };
+        g.task:'bystander' does:{ log.add:'bystander' };
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'grandchild' 'bystander' );
+        .isFalse:{ s.ok? };
+        .is:{ (s.at:'bad').outcome } equalTo:#failed;
+        .isTrue:{ (s.at:'bad').error.defined? };
+        .is:{ (s.at:'child').outcome } equalTo:#skipped;
+        .is:{ (s.at:'grandchild').outcome } equalTo:#skipped;
+        .is:{ (s.at:'bystander').outcome } equalTo:#ok;
+        .is:{ log } equalTo:#( 'bystander' );
+    };
+
+    .test:
+    failFastCancelsInFlight -> {
+        var g = [Quern]Graph.new;
+        var log = #();
+        g.task:'slow' does:{
+            Async.sleep:60000
+            log.add:'slow-done'
+        };
+        g.task:'bad' does:{
+            Async.sleep:20
+            ValueError.throw:'boom'
+        };
+        var s = nil;
+        var us = Timer.time:{
+            s = ([Quern]Run.new:{
+                var graph = g
+                var failFast = true
+                var silent = true
+            }).run:#( 'slow' 'bad' )
+        };
+        .isFalse:{ s.ok? };
+        .is:{ (s.at:'bad').outcome } equalTo:#failed;
+        .is:{ (s.at:'slow').outcome } equalTo:#cancelled;
+        "* nowhere near the sleeper's 60s — the cancel took effect
+        .isTrue:{ us < 30000000 };
+        .is:{ log } equalTo:#();
+    };
+
+    .test:
+    freshTasksAreSkippedStaleOnesRun -> {
+        var src = '/tmp/qn_quern_src.txt';
+        var out = '/tmp/qn_quern_out.txt';
+        [IO]File.write:'in' to:src;
+        [IO]File.write:'out' to:out;
+        "* deterministic mtimes — no sleeping on filesystem clocks
+        ([OS]Process.run:#( 'touch' '-t' '202601010000' src )).check;
+        ([OS]Process.run:#( 'touch' '-t' '202601020000' out )).check;
+        var g = [Quern]Graph.new;
+        var ran = #();
+        ((g.task:'gen' does:{ ran.add:'gen' }).sources:#( src )).produces:#( out );
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'gen' );
+        .is:{ (s.at:'gen').outcome } equalTo:#fresh;
+        .is:{ ran } equalTo:#();
+        "* now the source is newer -> stale -> the body runs
+        ([OS]Process.run:#( 'touch' '-t' '202601030000' src )).check;
+        var s2 = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'gen' );
+        .is:{ (s2.at:'gen').outcome } equalTo:#ok;
+        .is:{ ran } equalTo:#( 'gen' );
+    };
+
+    .test:
+    timeoutFailsTheTask -> {
+        var g = [Quern]Graph.new;
+        (g.task:'stuck' does:{ Async.sleep:60000 }).timeout:50;
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'stuck' );
+        .is:{ (s.at:'stuck').outcome } equalTo:#failed;
+    };
+
+    .test:
+    aggregatesAndDryRun -> {
+        var g = [Quern]Graph.new;
+        var log = #();
+        g.task:'a' does:{ log.add:'a' };
+        g.task:'all' needs:#( 'a' );
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'all' );
+        .is:{ (s.at:'all').outcome } equalTo:#ok;
+        .is:{ log } equalTo:#( 'a' );
+        "* dry run: plans, executes nothing
+        var s2 = ([Quern]Run.new:{
+            var graph = g
+            var dryRun = true
+            var silent = true
+        }).run:#( 'all' );
+        .isTrue:{ s2.ok? };
+        .is:{ log } equalTo:#( 'a' );
+    };
+}

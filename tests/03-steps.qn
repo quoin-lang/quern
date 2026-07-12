@@ -1,0 +1,44 @@
+"* Step running: [Quern]Ctx's run:/sh: (streaming, throwing on nonzero) and
+"* the [OS]Process.shell: extension. Tasks here are quiet! so the suite's
+"* output stays clean — captured lines replay only on failure.
+use self:lib/*
+
+(TestSuite.new:{ var name = 'QuernSteps' }).add:{
+    .test:
+    shellExtensionOnProcess -> {
+        .is:{ ([OS]Process.shell:'echo one | tr a-z A-Z').stdout } equalTo:'ONE
+';
+        .is:{ ([OS]Process.shell:'exit 3').exitCode } equalTo:3;
+        .is:{ ([OS]Process.shell:'pwd' dir:'/tmp').stdout.contains?:'tmp' } equalTo:true;
+    };
+
+    .test:
+    stepsRunStreamAndCapture -> {
+        var g = [Quern]Graph.new;
+        var got = #();
+        "* the arg form: a one-parameter body receives the ctx instead
+        (g.task:'steps' does:{ |t|
+            t.run:#( 'echo' 'hi' )
+            t.log:'a direct line'
+            got.add:(t.name)
+        }).quiet!;
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'steps' );
+        .isTrue:{ s.ok? };
+        .is:{ got } equalTo:#( 'steps' );
+    };
+
+    .test:
+    aFailingStepFailsTheTask -> {
+        var g = [Quern]Graph.new;
+        (g.task:'bad' does:{ .sh:'exit 7' }).quiet!;
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'bad' );
+        .is:{ (s.at:'bad').outcome } equalTo:#failed;
+        .isTrue:{ (s.at:'bad').error.message.contains?:'exited 7' };
+    };
+}
