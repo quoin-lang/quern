@@ -9,7 +9,7 @@
         "* [OS]ProcessResult, exactly as `run:` would.
         "*
         "* ```
-        "* ([OS]Process.shell:'echo one | tr a-z A-Z').stdout    "* -> ONE
+        "* ([OS]Process.shell:'echo one | tr a-z A-Z').stdout    "* -> 'ONE\n'
         "* ```
         shell: -> { |cmd:String| ^.run:#( 'sh' '-c' cmd ) }
 

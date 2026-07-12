@@ -101,5 +101,6 @@
         ^true
     }
 
+    "* A short description: the task's name.
     s -> { ^'[Quern]Task(%)' % @name }
 }

@@ -14,6 +14,9 @@
 "* Quern's module state: the current graph the Quernfile DSL registers into.
 [Quern]State <- #{}
 
+"* The task graph: declarations (`task:…`, answering the task so extras chain),
+"* lookup (`at:`), and the cycle-checked execution plan (`planFor:`). Mixes
+"* Iterate over the tasks in declaration order.
 [Quern]Graph <- { |@tasks @byName @defaultName|
     .mix:Iterate
 
@@ -102,6 +105,7 @@
         ^order
     }
 
+    "* A short description: the task count.
     s -> { ^'[Quern]Graph(% tasks)' % @tasks.count }
 }
 

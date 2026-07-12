@@ -90,6 +90,7 @@ Error <- [Quern]StepError <- {}
     "* `sh:` with the child's working directory.
     sh:dir: -> { |cmd dir| ^.run:#( 'sh' '-c' cmd ) dir:dir }
 
+    "* A short description: the owning task.
     s -> { ^'[Quern]Ctx(%)' % @taskName }
 }
 
@@ -115,6 +116,7 @@ Error <- [Quern]StepError <- {}
     "* Whether this task counts as satisfied (#ok or #fresh).
     ok? -> { (@outcome == #ok) || (@outcome == #fresh) }
 
+    "* A short description: name and outcome.
     s -> { ^'[Quern]TaskResult(%1 %2)' % #( @name @outcome ) }
 }
 
@@ -138,6 +140,7 @@ Error <- [Quern]StepError <- {}
     "* True when nothing failed, was cancelled, or was skipped.
     ok? -> { ^@results.all?:{ |r| r.ok? } }
 
+    "* The one-line run report `quern` prints.
     s -> {
         ^'quern: %1 ok, %2 fresh, %3 failed, %4 skipped, %5 cancelled' % #(
             (.count:#ok)
