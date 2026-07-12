@@ -5,7 +5,11 @@ use self:lib/*
 
 (TestSuite.new:{ var name = 'QuernRun' }).add:{
     .teardownAll:{
-        ([OS]Process.run:#( 'rm' '-f' '/tmp/qn_quern_src.txt' '/tmp/qn_quern_out.txt' )).check;
+        ([OS]Process.run:#(
+            'rm' '-rf'
+            '/tmp/qn_quern_src.txt' '/tmp/qn_quern_out.txt'
+            '/tmp/qn_quern_srcdir' '/tmp/qn_quern_outdir'
+        )).check;
     };
 
     .test:
@@ -140,6 +144,54 @@ use self:lib/*
         }).run:#( 'gen' );
         .is:{ (s2.at:'gen').outcome } equalTo:#ok;
         .is:{ ran } equalTo:#( 'gen' );
+    };
+
+    .test:
+    folderSourcesExpandRecursively -> {
+        "* A folder source contributes its NEWEST file (recursively); a folder
+        "* produce its OLDEST — one stale output means rebuild.
+        [IO]Folder.create:'/tmp/qn_quern_srcdir/sub';
+        [IO]Folder.create:'/tmp/qn_quern_outdir';
+        [IO]File.write:'a' to:'/tmp/qn_quern_srcdir/top.txt';
+        [IO]File.write:'b' to:'/tmp/qn_quern_srcdir/sub/deep.txt';
+        [IO]File.write:'x' to:'/tmp/qn_quern_outdir/one.txt';
+        [IO]File.write:'y' to:'/tmp/qn_quern_outdir/two.txt';
+        ([OS]Process.run:#( 'touch' '-t' '202601010000' '/tmp/qn_quern_srcdir/top.txt' )).check;
+        ([OS]Process.run:#( 'touch' '-t' '202601010000' '/tmp/qn_quern_srcdir/sub/deep.txt' )).check;
+        ([OS]Process.run:#( 'touch' '-t' '202601020000' '/tmp/qn_quern_outdir/one.txt' )).check;
+        ([OS]Process.run:#( 'touch' '-t' '202601020000' '/tmp/qn_quern_outdir/two.txt' )).check;
+        var g = [Quern]Graph.new;
+        var ran = #();
+        ((g.task:'gen' does:{ ran.add:'gen' }).sources:#( '/tmp/qn_quern_srcdir' ))
+            .produces:#( '/tmp/qn_quern_outdir/' );
+        var s = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'gen' );
+        .is:{ (s.at:'gen').outcome } equalTo:#fresh;
+        "* Touch one file DEEP in the source tree -> the whole task is stale.
+        ([OS]Process.run:#( 'touch' '-t' '202601030000' '/tmp/qn_quern_srcdir/sub/deep.txt' )).check;
+        var s2 = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'gen' );
+        .is:{ (s2.at:'gen').outcome } equalTo:#ok;
+        .is:{ ran } equalTo:#( 'gen' );
+        "* One OLD file among the produces -> stale even though its sibling is new.
+        ([OS]Process.run:#( 'touch' '-t' '202601040000' '/tmp/qn_quern_outdir/one.txt' )).check;
+        var s3 = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'gen' );
+        .is:{ (s3.at:'gen').outcome } equalTo:#ok;
+        "* All outputs newer than all inputs -> fresh again.
+        ([OS]Process.run:#( 'touch' '-t' '202601040000' '/tmp/qn_quern_outdir/two.txt' )).check;
+        var s4 = ([Quern]Run.new:{
+            var graph = g
+            var silent = true
+        }).run:#( 'gen' );
+        .is:{ (s4.at:'gen').outcome } equalTo:#fresh;
+        .is:{ ran.count } equalTo:2;
     };
 
     .test:

@@ -3,6 +3,7 @@
 Quern.tasks:{
     (.task:'test' does:{ .run:#( 'qn' 'test' 'tests' ) }).info:'run the test suite'
     (.task:'check' does:{ .sh:'qn check lib/*.qn bin/quern' }).info:'lint the sources'
+    (((.task:'doc' does:{ .sh:'qn doc' }).produces:#( 'qn-docs/' )).sources:#( 'lib' )).info:'generates docs'
     (.task:'fmt' does:{ .sh:'qn fmt lib/*.qn tests/*.qn bin/quern' }).info:'format the sources (writes)';
     .task:'ci' needs:#( 'test' 'check' );
     .default:'ci'

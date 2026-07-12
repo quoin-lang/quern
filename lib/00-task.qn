@@ -50,13 +50,15 @@
         ^self
     }
 
-    "* Set the freshness inputs. Answers self.
+    "* Set the freshness inputs — files or FOLDERS (a folder means everything
+    "* below it, recursively). Answers self.
     sources: -> { |paths|
         @sources = paths
         ^self
     }
 
-    "* Set the freshness outputs. Answers self.
+    "* Set the freshness outputs — files or folders (a folder means everything
+    "* below it). Answers self.
     produces: -> { |paths|
         @produces = paths
         ^self
@@ -82,23 +84,61 @@
     setBlock: -> { |b| @block = b }
 
     "* Fresh means skippable: every produce exists, and none is older than any
-    "* source (mtimes from the [IO]File metadata snapshot). No produces — a
-    "* plain action task — is never fresh; a missing source runs the task and
-    "* lets the body fail honestly.
+    "* source. A FOLDER on either side means every file below it — a source
+    "* folder contributes its NEWEST file, a produce folder its OLDEST (one
+    "* stale output means rebuild). Dot-entries are skipped (editor and
+    "* Finder droppings must not force rebuilds). No produces — a plain
+    "* action task — is never fresh; a missing or empty source runs the task
+    "* and lets the body fail honestly.
     fresh? -> {
         (@produces.any?).else:{ ^^false }
         var newestSource = nil
         @sources.each:{ |p|
-            ([IO]File.exists?:p).else:{ ^^false }
-            var m = ([IO]File.open:p).modified
+            var m = .newestUnder:p
+            m.defined?.else:{ ^^false }
             ((newestSource == nil) || (newestSource < m)).if:{ newestSource = m }
         }
         @produces.each:{ |p|
-            ([IO]File.exists?:p).else:{ ^^false }
-            var m = ([IO]File.open:p).modified
+            var m = .oldestUnder:p
+            m.defined?.else:{ ^^false }
             ((newestSource.defined?) && (m < newestSource)).if:{ ^^false }
         }
         ^true
+    }
+
+    "* The newest modification time at or under `path`, or nil for a missing
+    "* path or an empty folder.
+    newestUnder: -> { |path|
+        var newest = nil;
+        .mtimesUnder:path do:{ |m| ((newest == nil) || (newest < m)).if:{ newest = m } }
+        ^newest
+    }
+
+    "* The oldest modification time at or under `path` — what a produce is
+    "* judged by. nil for a missing path or an empty folder.
+    oldestUnder: -> { |path|
+        var oldest = nil;
+        .mtimesUnder:path do:{ |m| ((oldest == nil) || (m < oldest)).if:{ oldest = m } }
+        ^oldest
+    }
+
+    "* Internal: yield every file's mtime at/under `path`, recursing folders
+    "* and skipping dot-entries; a missing path yields nothing.
+    mtimesUnder:do: -> { |path block|
+        ([IO]File.exists?:path).if:{
+            var f = [IO]File.open:path
+            (f.is_file?).if:{ block.value:(f.modified) }
+            else:{
+                var me = self
+                ([IO]Folder.open:path).each:{ |entry|
+                    (entry.name.starts?:'.').else:{
+                        (entry.is_file?)
+                            .if:{ block.value:(entry.modified) }
+                             else:{ me.mtimesUnder:(entry.fullpath) do:block }
+                    }
+                }
+            }
+        }
     }
 
     "* A short description: the task's name.
