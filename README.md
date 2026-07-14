@@ -9,9 +9,9 @@ Quern.tasks:{
         .info:'compile everything';
     .task:'test' needs:'build' does:{ .run:#( 'cargo' 'nt' ) };
     .task:'lint' needs:'build' does:{ .sh:'cargo clippy -q' };
-    (.task:'dist' needs:#( 'test' 'lint' ) does:{ .sh:'./package.sh' })
-        .sources:#( 'target/release/qn' )
-        .produces:#( 'dist/qn.tar.gz' );
+    var dist = .task:'dist' needs:#( 'test' 'lint' ) does:{ .sh:'./package.sh' };
+    dist.sources:#( 'target/release/qn' );
+    dist.produces:#( 'dist/qn.tar.gz' );
     .default:'dist'
 }
 ```
@@ -25,7 +25,7 @@ $ quern -j 8 --fail-fast --quiet
 
 ## The model
 
-- **A Quernfile is ordinary Quoin.** `Quern.tasks:{ … }` runs the block against the task graph; `.task:… does:{ … }` declares, `needs:` draws the edges (a name or a list), `.default:` names the bare-`quern` target. Declarations answer the task, so the extras chain: `info:`, `sources:`/`produces:`, `timeout:`, `quiet!`. End each declaration statement with `;` — the same separator rule as everywhere else in Quoin.
+- **A Quernfile is ordinary Quoin.** `Quern.tasks:{ … }` runs the block against the task graph; `.task:… does:{ … }` declares, `needs:` draws the edges (a name or a list), `.default:` names the bare-`quern` target. Declarations answer the task, so the extras (`info:`, `sources:`/`produces:`, `timeout:`, `quiet!`) attach to it — bind the task to a `var` and add them as separate statements (as `dist` does above), or parenthesize each link: `((.task:'doc' …).sources:#( 'lib/' )).produces:#( 'qn-docs/' )`. Don't chain an extra *after a list or string argument* without parens — ordinary Quoin binding applies, so `.sources:#( … ) .produces:( … )` sends `produces:` to the **list**, not the task. End each declaration statement with `;` — the same separator rule as everywhere else in Quoin.
 - **Dependency-driven parallelism.** The plan is the transitive closure of what you asked for, cycle-checked. Execution never waits on artificial layers: a slow leaf holds back only its own dependents. `--jobs N` bounds how many run at once (default 4).
 - **Freshness, when you declare it.** A task with `produces:` is skipped when every product exists and none is older than any `sources:` entry — `make`'s contract, from file mtimes. Both sides take files or **folders**: a source folder contributes its newest file (recursively), a produce folder its oldest, so `sources:#( 'lib' ) produces:#( 'qn-docs/' )` rebuilds the docs whenever anything under `lib/` changes. Dot-entries are ignored; tasks without `produces:` always run.
 - **Failure is contained by default.** A failed task marks its dependents *skipped*; unrelated tasks finish. `--fail-fast` instead cancels everything in flight — and a cancelled task's subprocesses die with it (Quoin's process lifecycle owns that), so nothing leaks.
