@@ -4,6 +4,11 @@
 "* Quernfile's default) dependency-driven in parallel.
 use self:lib/*
 
+"* The bare brand name, for Quernfiles (which this command evals). The library itself
+"* is fully namespaced so it also loads as a package (`use quern:*`); consumers who
+"* want the short name make this same alias.
+Quern <- [Quern]Quern
+
 var cli = [CLI]Spec.new:'quern' about:'A parallel task runner for Quoin projects.'
 cli.option:'file' short:'f' default:'Quernfile.qn' help:'the Quernfile to load'
 cli.option:'jobs' short:'j' default:'4' help:'how many tasks may run at once'

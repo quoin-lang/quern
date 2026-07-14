@@ -113,7 +113,11 @@
 "* CURRENT graph as self (created on first use, shared across calls, so a
 "* Quernfile may declare in several passes). `Quern.graph` reads it; `reset`
 "* forgets it (tests, or reloading a different Quernfile).
-Quern <- {
+"*
+"* Namespaced like everything else here — a package's classes cannot claim bare
+"* globals. `bin/quern` aliases the bare `Quern` for Quernfiles (its own eval
+"* domain); other consumers alias it themselves: `Quern <- [Quern]Quern`.
+[Quern]Quern <- {
     .meta <-- {
         "* Declare tasks: the block's bare `.task:…` / `.default:` sends land
         "* on the current graph. Answers the graph.
