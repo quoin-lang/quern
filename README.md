@@ -1,5 +1,8 @@
 # quern
 
+> Requires [Quoin](https://github.com/quoin-lang/quoin) **v0.1.1** or later (the Quoin
+> package format: `quoin.toml`, `qn pkg install`, `use quern:*`).
+
 A parallel task runner for [Quoin](https://github.com/quoin-lang/quoin) projects — `make`'s dependency graph with Quoin's concurrency underneath. Tasks are blocks in a `Quernfile.qn`; quern runs them **dependency-driven**: every task starts the moment its last dependency finishes, bounded by `--jobs`, with each task's subprocess output streamed live under its own colored `[task]` prefix.
 
 ```quoin
@@ -36,13 +39,24 @@ $ quern -j 8 --fail-fast --quiet
 
 ```
 Quernfile.qn      your project's tasks (loaded from the current directory, or --file)
-bin/quern         the command (a Quoin shebang script; put it on your PATH)
-lib/*.qn          the library: Quern, [Quern]Graph/Task/Run/Ctx, [OS]Process.shell:
+quoin.toml        the package manifest: [lib] root = "lib", [bin] quern = "bin/quern"
+bin/quern         the command (a Quoin shebang script; `qn pkg install .` links it onto your PATH)
+lib/*.qn          the library: [Quern]Quern (the `Quern` DSL facade), [Quern]Graph/Task/Run/Ctx, [OS]Process.shell:
 tests/*.qn        qn test tests
 ```
 
-The library is usable without the command: build a `[Quern]Graph`, then `([Quern]Run.new:{ var graph = g }).run:#( 'task' )` answers a `[Quern]Summary` — that's exactly how quern's own tests drive it.
+The library is usable without the command — any project can `use quern:*` (once quern is installed) and build a `[Quern]Graph`, then `([Quern]Run.new:{ var graph = g }).run:#( 'task' )` answers a `[Quern]Summary` — that's exactly how quern's own tests drive it. Quernfiles get the bare `Quern` facade from the command; library consumers alias it themselves if wanted: `Quern <- [Quern]Quern`.
+
+## Installing
+
+```
+$ git clone https://github.com/quoin-lang/quern && qn pkg install quern
+installed quern 0.1.0 -> ~/.quoin/packages/quern
+linked ~/.quoin/bin/quern -> ~/.quoin/packages/quern/bin/quern
+```
+
+Put `~/.quoin/bin` on your `PATH` once and `quern` is a command; `use quern:*` loads the library from any directory.
 
 ## Requirements
 
-A `qn` binary on the PATH. No other dependencies — quern is pure Quoin over the standard library (`[OS]Process`, `[CLI]Spec`, `Channel`/`Task`/`Async`, `Term`).
+A `qn` binary (Quoin **v0.1.1+**) on the PATH. No other dependencies — quern is pure Quoin over the standard library (`[OS]Process`, `[CLI]Spec`, `Channel`/`Task`/`Async`, `Term`).

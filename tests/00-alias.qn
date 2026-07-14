@@ -1,0 +1,5 @@
+"* Loaded first by the `qn test` glob: the tests exercise the Quernfile-facing DSL, so
+"* they get the same bare alias `bin/quern` gives Quernfiles. The library itself is
+"* fully namespaced (it loads as a package via `use quern:*`).
+use self:lib/*
+Quern <- [Quern]Quern

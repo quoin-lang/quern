@@ -1,0 +1,14 @@
+# quern as a Quoin package (requires Quoin v0.1.1+): `qn pkg install .` puts `quern`
+# on your PATH (via ~/.quoin/bin) and installs the library, which any project can load
+# with `use quern:*` -> [Quern]Graph / [Quern]Task / [Quern]Run / [Quern]Quern.
+
+[package]
+name = "quern"
+version = "0.1.0"
+description = "A parallel task runner for Quoin projects — make's dependency graph with Quoin's concurrency underneath."
+
+[lib]
+root = "lib"
+
+[bin]
+quern = "bin/quern"
