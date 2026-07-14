@@ -1,12 +1,14 @@
 "* One task: a name, its dependencies, an optional body block, and the
 "* declarative extras — freshness inputs/outputs, a timeout, a description.
 "* Built through [Quern]Graph's `task:…` declarations, which answer the task
-"* so the extras chain:
+"* so the extras attach — via a var and separate statements, or one
+"* parenthesized link per extra (never bare after a list/string argument,
+"* where ordinary binding would send the extra to the argument):
 "*
-"*   (.task:'dist' needs:'test' does:{ .sh:'make tarball' })
-"*       .info:'build the release tarball'
-"*       .sources:#( 'target/release/qn' )
-"*       .produces:#( 'dist/qn.tar.gz' )
+"*   var dist = .task:'dist' needs:'test' does:{ .sh:'make tarball' };
+"*   dist.info:'build the release tarball';
+"*   dist.sources:#( 'target/release/qn' );
+"*   dist.produces:#( 'dist/qn.tar.gz' )
 [Quern]Task <- { |@name @info @needs @block @sources @produces @timeoutMs @quiet|
     "* Internal: constructed by the graph; the setters below refine.
     init: -> { |name:String|
